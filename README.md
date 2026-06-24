@@ -37,7 +37,12 @@ The weighting reflects the priority order recommended by the threat intelligence
 - **Groq (Llama 3.3 70B)** — LLM for plain-English briefs
 - **Streamlit** — web app + deployment
 
+
 ## Running locally
+pip install -r requirements.txt
+# create a .env file containing: GROQ_API_KEY=your_key
+streamlit run app.py
+
 
 
 ## Supporting questions

@@ -17,11 +17,12 @@ def load_everything():
     threats  = pd.read_csv("data/threat_intelligence.csv")
     services = pd.read_csv("data/business_services.csv")
     controls = pd.read_csv("data/nist_controls.csv")
+    kev = pd.read_csv("data/kev.csv")
     model = SentenceTransformer("all-MiniLM-L6-v2")
     control_vectors = model.encode(controls["text"].tolist())
-    return vulns, assets, threats, services, controls, model, control_vectors
+    return vulns, assets, threats, services, controls, kev , model, control_vectors
 
-vulns, assets, threats, services, controls, model, control_vectors = load_everything()
+vulns, assets, threats, services, controls, kev ,  model, control_vectors = load_everything()
 
 # ---------- scoring ----------
 def build_scored_table():
@@ -30,15 +31,22 @@ def build_scored_table():
     threat_cves = threats.rename(columns={"matched_cve_or_control": "cve"})
     df = df.merge(threat_cves[["cve","threat_actor","campaign_name","ransomware_association"]], on="cve", how="left")
     df["is_ransomware"] = (df["ransomware_association"] == "Yes")
+    kev_cves = set(kev["cveID"])# takes the column of all KEV CVE IDs and turns it into a set
+    ransomware_kev = set(kev[kev["knownRansomwareCampaignUse"] == "Known"]["cveID"])
+    df["in_kev"] = df["cve"].isin(kev_cves)#asks each of the vulnerabilities "is the CVE in the KEV set?" - True/False. New column in_kev flags vulns confirmed exploited. This is the authoritative "actively exploited" signal the brief wanted.
+
+    df["is_ransomware"] = df["is_ransomware"] | df["cve"].isin(ransomware_kev)#a vuln is now ransomware-linked if your threat CSV said so OR KEV confirms it. We combine both sources rather than replacing — most defensible (catches more, misses less).
+
     df = df.sort_values("is_ransomware", ascending=False).drop_duplicates("vuln_id")
 
     def score(row):
         points = row["cvss"] * 2
         if row["internet_exposed"] == "Yes": points += 20
-        if row["exploit_available"] == "Yes": points += 20
+        if row["exploit_available"] == "Yes" or row["in_kev"]: points += 20
+
         if row["is_ransomware"]: points += 15
         points += {"Critical":15,"High":10,"Medium":5,"Low":0}.get(row["criticality"],0)
-        if row["edr_installed"] == "No": points += 10
+        if row["edr_installed"] == "No": points += 10 
         return round(points, 1)
 
     df["risk_score"] = df.apply(score, axis=1)
@@ -83,5 +91,14 @@ NIST GUIDANCE: {top_control['control_id']} - {top_control['title']}. {top_contro
             c1.metric("Risk Score", f"{row['risk_score']}/100")
             c2.metric("Asset", row['asset_name'])
             c3.metric("Top NIST Control", top_control['control_id'])
+
+            # --- evidence fields required by the brief ---
+            threat = row['threat_actor'] if pd.notna(row['threat_actor']) else "No active campaign matched"
+            campaign = f" ({row['campaign_name']})" if pd.notna(row['campaign_name']) else ""
+            st.write(f"**Vulnerability:** {row['cve']}  |  **Business service at risk:** {row['business_service']}")
+            st.write(f"**Matched threat intel:** {threat}{campaign}")
+            st.write(f"**Actively exploited (CISA KEV):** {'✅ Confirmed' if row['in_kev'] else '— not in KEV'}")
+
+            st.write("**Why it ranks here / remediation:**")
             st.write(brief)
             st.caption(f"RAG candidates: {options}")
